@@ -45,7 +45,7 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	var args []string
 	for i, arg := range si.Args {
 		if strings.ToLower(arg) == "where" {
-			args := si.RawArgs[0 : i+1]
+			args = si.RawArgs[0 : i+1]
 			args = append(args,
 				"time", ">=", "$tMin",
 				"AND",
