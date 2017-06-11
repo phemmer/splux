@@ -44,7 +44,8 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 
 	var args []string
 	for i, arg := range si.Args {
-		if strings.ToLower(arg) == "where" {
+		switch strings.ToLower(arg) {
+		case "where":
 			args = append(args, si.RawArgs[0:i+1]...)
 			args = append(args,
 				"time", ">=", "$tMin",
@@ -54,8 +55,7 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 			)
 			args = append(args, si.RawArgs[i+1:]...)
 			break
-		}
-		if strings.ToLower(arg) == "group" {
+		case "group", "order", "limit", "offset", "slimit", "soffset":
 			args = append(args, si.RawArgs[0:i]...)
 			args = append(args,
 				"WHERE",
