@@ -86,7 +86,67 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	querier := client.Querier()
 	querier.Database = db
 
+	if si.EarliestTime.UnixNano() == 0 && si.LatestTime.UnixNano() == 0 {
+		return &RealTimeChunker{
+			querier: querier,
+			qStr:    qStr,
+		}, nil
+	}
+
 	return newChunker(querier, qStr, si.EarliestTime, si.LatestTime)
+}
+
+type RealTimeChunker struct {
+	querier *influxdb.Querier
+	qStr    string
+
+	lastTMax time.Time
+	chunker  *Chunker
+}
+
+func (rtch *RealTimeChunker) NextChunk() ([]string, [][]interface{}, error) {
+	//FIXME Bad implementation!
+	// This is going to search for results since the last poll. However if results are getting inserted in batches, say every 10 seconds, and we're polling every 1 second, then points can be inserted in the past, beyond the start of our query time window.
+	//
+	// Don't really have a good solution for this :-(
+	// The obvious solution of setting rtch.lastTMax to the time of the last point found is better, but still broken. If you have multiple inserters running on different intervals, you can still end up with points getting inserted in the past.
+	if rtch.chunker == nil {
+		tNow := time.Now()
+		tLast := rtch.lastTMax
+		if tLast.IsZero() {
+			tLast = tNow.Add(-time.Minute)
+		}
+		sleepTime := time.Second - tNow.Sub(tLast)
+		if sleepTime > 0 {
+			time.Sleep(sleepTime)
+		}
+
+		tLast = tLast.Add(time.Nanosecond)
+		var err error
+		if rtch.chunker, err = newChunker(rtch.querier, rtch.qStr, tLast, tNow); err != nil {
+			return nil, nil, errors.F(err, "executing real-time query")
+		}
+		rtch.lastTMax = tNow
+	}
+
+	cols, data, err := rtch.chunker.NextChunk()
+	if err != nil {
+		return nil, nil, errors.F(err, "retrieving real-time chunk")
+	}
+	if cols == nil {
+		rtch.chunker.Close()
+		rtch.chunker = nil
+		// we could return empty and let next call re-init
+		return rtch.NextChunk()
+	}
+	return cols, data, nil
+}
+
+func (rtch *RealTimeChunker) Close() {
+	if rtch.chunker != nil {
+		rtch.chunker.Close()
+		rtch.chunker = nil
+	}
 }
 
 type Chunker struct {
