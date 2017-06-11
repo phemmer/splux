@@ -27,11 +27,11 @@ func (ic *InfluxCmd) Getinfo() map[string]interface{} {
 func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	var db string
 
+	var args []string
 	for i, arg := range si.Args {
 		parts := strings.SplitN(arg, "=", 2)
 		if len(parts) != 2 {
-			si.Args = si.Args[i:]
-			si.RawArgs = si.RawArgs[i:]
+			args = append(args, si.RawArgs[i:]...)
 			break
 		}
 		switch parts[0] {
@@ -42,40 +42,12 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 		}
 	}
 
-	var args []string
-	for i, arg := range si.Args {
-		switch strings.ToLower(arg) {
-		case "where":
-			args = append(args, si.RawArgs[0:i+1]...)
-			args = append(args,
-				"time", ">=", "$tMin",
-				"AND",
-				"time", "<=", "$tMax",
-				"AND",
-			)
-			args = append(args, si.RawArgs[i+1:]...)
-			break
-		case "group", "order", "limit", "offset", "slimit", "soffset":
-			args = append(args, si.RawArgs[0:i]...)
-			args = append(args,
-				"WHERE",
-				"time", ">=", "$tMin",
-				"AND",
-				"time", "<=", "$tMax",
-			)
-			args = append(args, si.RawArgs[i:]...)
-			break
-		}
-	}
-	if len(args) == 0 {
-		args = append(args, si.RawArgs...)
-		args = append(args,
-			"WHERE",
-			"time", ">=", "$tMin",
-			"AND",
-			"time", "<=", "$tMax",
-		)
-	}
+	args = qWhere(args,
+		"time", ">=", "$tMin",
+		"AND",
+		"time", "<=", "$tMax",
+	)
+	args = qOrder(args, "time", "desc")
 
 	qStr := strings.Join(args, " ")
 
@@ -89,6 +61,35 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	querier.Chunked = true
 
 	return newChunker(querier, qStr, si.EarliestTime, si.LatestTime)
+}
+
+func qWhere(args []string, insArgs ...string) []string {
+	for i, arg := range args {
+		switch strings.ToLower(arg) {
+		case "where":
+			return qIns(args, i+1, append(insArgs, "AND")...)
+		case "group", "order", "limit", "offset", "slimit", "soffset":
+			return qIns(args, i, append([]string{"WHERE"}, insArgs...)...)
+		}
+	}
+	return append(args, append([]string{"WHERE"}, insArgs...)...)
+}
+
+func qOrder(args []string, insArgs ...string) []string {
+	for i, arg := range args {
+		switch strings.ToLower(arg) {
+		case "order":
+			insArgs[len(insArgs)-1] += ","
+			return qIns(args, i+2, insArgs...)
+		case "limit", "offset", "slimit", "soffset":
+			return qIns(args, i, append([]string{"ORDER", "BY"}, insArgs...)...)
+		}
+	}
+	return append(args, append([]string{"ORDER", "BY"}, insArgs...)...)
+}
+
+func qIns(args []string, i int, insArgs ...string) []string {
+	return append(args[:i], append(insArgs, args[i:]...)...)
 }
 
 type Chunker struct {
