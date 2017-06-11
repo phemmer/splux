@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/phemmer/splux/splunk"
 
 	influxdb "github.com/influxdata/influxdb-client"
+	"github.com/influxdata/influxdb/influxql"
 )
 
 var INFLUXDB_ADDR = "http://192.168.0.70:8086"
@@ -30,10 +32,12 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	var args []string
 	for i, arg := range si.Args {
 		parts := strings.SplitN(arg, "=", 2)
-		if len(parts) != 2 {
-			args = append(args, si.RawArgs[i:]...)
+		// stop param parsing on first arg not containing '=', or where key contains whitespace.
+		if len(parts) != 2 || strings.Contains(parts[0], " ") {
+			args = append(args, si.Args[i:]...)
 			break
 		}
+
 		switch parts[0] {
 		case "db":
 			db = parts[1]
@@ -42,14 +46,15 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 		}
 	}
 
-	args = qWhere(args,
-		"time", ">=", "$tMin",
-		"AND",
-		"time", "<=", "$tMax",
-	)
-	args = qOrder(args, "time", "desc")
+	if len(args) == 0 {
+		return nil, fmt.Errorf("query string missing")
+	}
+	qStr := args[0]
+	//qArgs := args[1:]
 
-	qStr := strings.Join(args, " ")
+	var err error
+	qStr = qWhere(qStr, "time >= $tMin AND time <= $tMax")
+	qStr = qOrder(qStr, "time desc")
 
 	client, err := influxdb.NewClient(INFLUXDB_ADDR)
 	if err != nil {
@@ -63,33 +68,44 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	return newChunker(querier, qStr, si.EarliestTime, si.LatestTime)
 }
 
-func qWhere(args []string, insArgs ...string) []string {
-	for i, arg := range args {
-		switch strings.ToLower(arg) {
-		case "where":
-			return qIns(args, i+1, append(insArgs, "AND")...)
-		case "group", "order", "limit", "offset", "slimit", "soffset":
-			return qIns(args, i, append([]string{"WHERE"}, insArgs...)...)
+func qWhere(qStr, clause string) string {
+	scnr := influxql.NewScanner(bytes.NewBufferString(qStr))
+SCANNER:
+	for {
+		tok, pos, _ := scnr.Scan()
+		switch tok {
+		case influxql.EOF:
+			break SCANNER
+		case influxql.WHERE:
+			return qStr[:pos.Char+5] + " " + clause + " AND" + qStr[pos.Char+5:]
+		case influxql.GROUP, influxql.ORDER, influxql.LIMIT, influxql.OFFSET, influxql.SLIMIT, influxql.SOFFSET:
+			return qStr[:pos.Char] + "WHERE " + clause + " " + qStr[pos.Char:]
 		}
 	}
-	return append(args, append([]string{"WHERE"}, insArgs...)...)
+	return qStr + " WHERE " + clause
 }
 
-func qOrder(args []string, insArgs ...string) []string {
-	for i, arg := range args {
-		switch strings.ToLower(arg) {
-		case "order":
-			insArgs[len(insArgs)-1] += ","
-			return qIns(args, i+2, insArgs...)
-		case "limit", "offset", "slimit", "soffset":
-			return qIns(args, i, append([]string{"ORDER", "BY"}, insArgs...)...)
+func qOrder(qStr, clause string) string {
+	scnr := influxql.NewScanner(bytes.NewBufferString(qStr))
+	haveOrder := false
+SCANNER:
+	for {
+		tok, pos, _ := scnr.Scan()
+		switch tok {
+		case influxql.EOF:
+			break SCANNER
+		case influxql.ORDER:
+			haveOrder = true
+		case influxql.BY:
+			if !haveOrder {
+				continue SCANNER
+			}
+			return qStr[:pos.Char+2] + " " + clause + ", " + qStr[pos.Char+2:]
+		case influxql.LIMIT, influxql.OFFSET, influxql.SLIMIT, influxql.SOFFSET:
+			return qStr[:pos.Char] + "ORDER BY " + clause + qStr[pos.Char:]
 		}
 	}
-	return append(args, append([]string{"ORDER", "BY"}, insArgs...)...)
-}
-
-func qIns(args []string, i int, insArgs ...string) []string {
-	return append(args[:i], append(insArgs, args[i:]...)...)
+	return qStr + " ORDER BY " + clause
 }
 
 type Chunker struct {
@@ -103,7 +119,7 @@ func newChunker(querier *influxdb.Querier, qStr string, tMin, tMax time.Time) (*
 		influxdb.Param("tMax", tMax.UnixNano()),
 	)
 	if err != nil {
-		return nil, errors.F(err, "performing query")
+		return nil, errors.F(err, "performing query %q", qStr)
 	}
 
 	return &Chunker{Cursor: cur}, nil
