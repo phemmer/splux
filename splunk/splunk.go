@@ -203,6 +203,8 @@ func (sp *Processor) Execute() error {
 
 func toString(v interface{}) string {
 	switch v := v.(type) {
+	case nil:
+		return ""
 	case string:
 		return v
 	case []byte:
