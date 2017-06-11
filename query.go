@@ -85,6 +85,7 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 
 	querier := client.Querier()
 	querier.Database = db
+	querier.Chunked = true
 
 	return newChunker(querier, qStr, si.EarliestTime, si.LatestTime)
 }
@@ -152,7 +153,7 @@ func (ch *Chunker) NextChunk() ([]string, [][]interface{}, error) {
 			if errors.IsEOF(err) {
 				break
 			}
-			return nil, nil, err
+			return nil, nil, errors.F(err, "retrieving next row")
 		}
 
 		fields := make([]interface{}, len(cols))
