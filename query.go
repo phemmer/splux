@@ -126,7 +126,8 @@ func (ch *Chunker) NextChunk() ([]string, [][]interface{}, error) {
 	ser, err := ch.curSet.NextSeries()
 	if err != nil {
 		if errors.IsEOF(err) {
-			return nil, nil, nil
+			ch.curSet = nil
+			return []string{}, nil, nil
 		}
 		return nil, nil, errors.F(err, "retrieving next series")
 	}
@@ -167,7 +168,6 @@ func (ch *Chunker) NextChunk() ([]string, [][]interface{}, error) {
 		data = append(data, fields)
 	}
 
-	ch.curSet = nil
 	return cols, data, nil
 }
 

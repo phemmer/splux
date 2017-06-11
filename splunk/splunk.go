@@ -176,6 +176,9 @@ func (sp *Processor) Execute() error {
 		if cols == nil {
 			break
 		}
+		if len(cols) == 0 {
+			continue
+		}
 
 		buf.Reset()
 		bufCsv.Write(cols)
@@ -244,6 +247,14 @@ func toString(v interface{}) string {
 }
 
 func (sp *Processor) Send(meta map[string]interface{}, body []byte) error {
+	if meta == nil {
+		meta = map[string]interface{}{}
+	}
+	if fin, ok := meta["finished"]; !ok || fin == false {
+		meta["partial"] = true
+		meta["finished"] = false
+	}
+
 	var metaBuf []byte
 	if meta != nil {
 		var err error
