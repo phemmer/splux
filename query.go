@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -48,9 +47,9 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 		if strings.ToLower(arg) == "where" {
 			args := si.RawArgs[0 : i+1]
 			args = append(args,
-				"time", ">=", strconv.FormatInt(si.EarliestTime.UnixNano(), 10),
+				"time", ">=", "$tMin",
 				"AND",
-				"time", "<=", strconv.FormatInt(si.LatestTime.UnixNano(), 10),
+				"time", "<=", "$tMax",
 				"AND",
 			)
 			args = append(args, si.RawArgs[i+1:]...)
@@ -60,9 +59,9 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 			args = si.RawArgs[0:i]
 			args = append(args,
 				"WHERE",
-				"time", ">=", strconv.FormatInt(si.EarliestTime.UnixNano(), 10),
+				"time", ">=", "$tMin",
 				"AND",
-				"time", "<=", strconv.FormatInt(si.LatestTime.UnixNano(), 10),
+				"time", "<=", "$tMax",
 			)
 			args = append(args, si.RawArgs[i:]...)
 			break
@@ -71,14 +70,13 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 	if len(args) == 0 {
 		args = append(si.RawArgs,
 			"WHERE",
-			"time", ">=", strconv.FormatInt(si.EarliestTime.UnixNano(), 10),
+			"time", ">=", "$tMin",
 			"AND",
-			"time", "<=", strconv.FormatInt(si.LatestTime.UnixNano(), 10),
+			"time", "<=", "$tMax",
 		)
 	}
 
 	qStr := strings.Join(args, " ")
-	fmt.Fprintf(os.Stderr, "QUERY: %s\n", qStr)
 
 	client, err := influxdb.NewClient(INFLUXDB_ADDR)
 	if err != nil {
@@ -87,34 +85,42 @@ func (ic *InfluxCmd) Execute(si splunk.Searchinfo) (splunk.Chunker, error) {
 
 	querier := client.Querier()
 	querier.Database = db
-	cur, err := querier.Select(qStr)
-	if err != nil {
-		return nil, err
-	}
 
-	return influxSplunkResult{Cursor: cur}, nil
+	return newChunker(querier, qStr, si.EarliestTime, si.LatestTime)
 }
 
-type influxSplunkResult struct {
+type Chunker struct {
 	influxdb.Cursor
 	curSet influxdb.ResultSet
 }
 
-func (isr influxSplunkResult) NextChunk() ([]string, [][]interface{}, error) {
-	if isr.curSet == nil {
+func newChunker(querier *influxdb.Querier, qStr string, tMin, tMax time.Time) (*Chunker, error) {
+	cur, err := querier.Select(qStr,
+		influxdb.Param("tMin", tMin.UnixNano()),
+		influxdb.Param("tMax", tMax.UnixNano()),
+	)
+	if err != nil {
+		return nil, errors.F(err, "performing query")
+	}
+
+	return &Chunker{Cursor: cur}, nil
+}
+
+func (ch *Chunker) NextChunk() ([]string, [][]interface{}, error) {
+	if ch.curSet == nil {
 		var err error
-		if isr.curSet, err = isr.Cursor.NextSet(); err != nil {
+		if ch.curSet, err = ch.Cursor.NextSet(); err != nil {
 			if errors.IsEOF(err) {
 				return nil, nil, nil
 			}
 			return nil, nil, errors.F(err, "retrieving next set")
 		}
-		if isr.curSet == nil {
+		if ch.curSet == nil {
 			return nil, nil, nil
 		}
 	}
 
-	ser, err := isr.curSet.NextSeries()
+	ser, err := ch.curSet.NextSeries()
 	if err != nil {
 		if errors.IsEOF(err) {
 			return nil, nil, nil
@@ -158,12 +164,13 @@ func (isr influxSplunkResult) NextChunk() ([]string, [][]interface{}, error) {
 		data = append(data, fields)
 	}
 
-	isr.curSet = nil
+	ch.curSet = nil
 	return cols, data, nil
 }
 
-func (isr influxSplunkResult) Close() {
-	isr.Cursor.Close()
+func (ch *Chunker) Close() {
+	ch.Cursor.Close()
+	ch.Cursor = nil
 }
 
 func main() {
